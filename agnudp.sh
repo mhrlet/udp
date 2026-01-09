@@ -159,7 +159,8 @@ show_main_menu() {
         echo -e "  $(tcyan)6)$(treset) Connection Info"
         echo -e "  $(tyellow)7)$(treset) Update Hysteria"
         echo -e "  $(tmagenta)8)$(treset) Update Script"
-        echo -e "  $(tred)9)$(treset) Uninstall"
+        echo -e "  $(tgreen)9)$(treset) Fix Missing Server Field"
+        echo -e "  $(tred)10)$(treset) Uninstall"
     fi
     
     echo -e "  $(tred)0)$(treset) Exit"
@@ -931,6 +932,83 @@ action_update_script() {
     pause
 }
 
+action_fix_missing_server() {
+    show_banner
+    echo -e "$(tgreen)$(tbold)Fix Missing Server Field$(treset)"
+    echo ""
+    
+    # Check if server field exists
+    if grep -q '"server":' "$CONFIG_DIR/config.json" 2>/dev/null; then
+        log_info "Server field already exists in configuration"
+        echo ""
+        local current_server=$(grep -oP '(?<="server": ")[^"]*' "$CONFIG_DIR/config.json")
+        echo -e "Current server value: $(tgreen)$current_server$(treset)"
+        echo ""
+        read -p "Do you want to update it? (yes/no): " update_choice
+        
+        if [[ "$update_choice" != "yes" ]]; then
+            log_info "No changes made"
+            pause
+            return
+        fi
+    fi
+    
+    log_info "Detecting server IP address..."
+    local server_ip=$(get_server_ip)
+    
+    if [[ -z "$server_ip" ]]; then
+        log_error "Could not detect server IP"
+        echo ""
+        read -p "Enter server IP or domain manually: " server_ip
+        
+        if [[ -z "$server_ip" ]]; then
+            log_error "No server IP provided"
+            pause
+            return
+        fi
+    fi
+    
+    log_success "Detected IP: $server_ip"
+    echo ""
+    read -p "Use this IP, or enter a custom domain/IP [$server_ip]: " custom_input
+    
+    if [[ -n "$custom_input" ]]; then
+        server_ip="$custom_input"
+    fi
+    
+    log_info "Updating configuration with server: $server_ip"
+    
+    # Check if server field exists
+    if grep -q '"server":' "$CONFIG_DIR/config.json"; then
+        # Update existing server field
+        sed -i "s/\"server\": \"[^\"]*\"/\"server\": \"$server_ip\"/" "$CONFIG_DIR/config.json"
+        log_success "Server field updated"
+    else
+        # Add server field at the beginning (after opening brace)
+        sed -i "2i\\  \"server\": \"$server_ip\"," "$CONFIG_DIR/config.json"
+        log_success "Server field added"
+    fi
+    
+    echo ""
+    log_info "Restarting service..."
+    systemctl restart hysteria-server.service
+    
+    sleep 2
+    
+    if systemctl is-active --quiet hysteria-server.service; then
+        echo ""
+        log_success "Configuration fixed successfully!"
+        echo ""
+        echo -e "$(tbold)Your connection details:$(treset)"
+        show_connection_info
+    else
+        log_error "Service failed to restart"
+        echo "Check logs: journalctl -u hysteria-server -n 50"
+    fi
+    
+    pause
+}
+
 action_uninstall() {
     show_banner
     echo -e "$(tred)$(tbold)Uninstall AGN-UDP$(treset)"
@@ -1019,6 +1097,9 @@ main_loop() {
                     action_update_script
                     ;;
                 9)
+                    action_fix_missing_server
+                    ;;
+                10)
                     action_uninstall
                     ;;
                 0)
