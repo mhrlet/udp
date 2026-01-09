@@ -452,6 +452,61 @@ generate_random_password() {
     tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 12
 }
 
+action_reinstall() {
+    show_banner
+    echo -e "$(tcyan)$(tbold)Reinstall AGN-UDP Server$(treset)"
+    echo ""
+    
+    # Load existing config
+    load_config
+    
+    echo -e "$(tbold)Current Configuration:$(treset)"
+    echo -e "  Server IP:     $(tgreen)$DOMAIN$(treset)"
+    echo -e "  Port:          $(tgreen)${UDP_PORT#:}$(treset)"
+    echo -e "  Password:      $(tgreen)$PASSWORD$(treset)"
+    echo -e "  Upload Speed:  $(tgreen)$UP_SPEED Mbps$(treset)"
+    echo -e "  Download Speed:$(tgreen)$DOWN_SPEED Mbps$(treset)"
+    echo ""
+    
+    echo -e "$(tyellow)This will reinstall Hysteria binary and restart the service.$(treset)"
+    echo -e "$(tyellow)Your configuration will be preserved.$(treset)"
+    echo ""
+    
+    read -p "Continue with reinstall? (yes/no): " confirm
+    
+    if [[ "$confirm" != "yes" ]]; then
+        log_info "Reinstall cancelled"
+        pause
+        return
+    fi
+    
+    echo ""
+    log_info "Starting reinstallation..."
+    echo ""
+    
+    # Stop service
+    systemctl stop hysteria-server.service 2>/dev/null || true
+    
+    # Reinstall binary
+    detect_architecture
+    download_hysteria || return 1
+    
+    # Restart service
+    systemctl start hysteria-server.service
+    
+    sleep 2
+    
+    if systemctl is-active --quiet hysteria-server.service; then
+        echo ""
+        log_success "Reinstallation completed successfully!"
+    else
+        log_error "Service failed to start"
+        echo "Check logs: journalctl -u hysteria-server -n 50"
+    fi
+    
+    pause
+}
+
 action_install() {
     show_banner
     echo -e "$(tgreen)$(tbold)Installing AGN-UDP Server$(treset)"
@@ -796,7 +851,7 @@ main_loop() {
             # Already installed
             case $choice in
                 1)
-                    action_install
+                    action_reinstall
                     ;;
                 2)
                     action_edit_config
