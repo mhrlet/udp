@@ -157,10 +157,11 @@ show_main_menu() {
         echo -e "  $(tyellow)4)$(treset) Service Management"
         echo -e "  $(tmagenta)5)$(treset) View Logs"
         echo -e "  $(tcyan)6)$(treset) Connection Info"
-        echo -e "  $(tyellow)7)$(treset) Update Hysteria"
-        echo -e "  $(tmagenta)8)$(treset) Update Script"
-        echo -e "  $(tgreen)9)$(treset) Fix Missing Server Field"
-        echo -e "  $(tred)10)$(treset) Uninstall"
+        echo -e "  $(tgreen)7)$(treset) Domain Management"
+        echo -e "  $(tyellow)8)$(treset) Update Hysteria"
+        echo -e "  $(tmagenta)9)$(treset) Update Script"
+        echo -e "  $(tgreen)10)$(treset) Fix Missing Server Field"
+        echo -e "  $(tred)11)$(treset) Uninstall"
     fi
     
     echo -e "  $(tred)0)$(treset) Exit"
@@ -871,6 +872,310 @@ action_connection_info() {
     pause
 }
 
+action_domain_management() {
+    show_banner
+    echo -e "$(tgreen)$(tbold)Domain Management$(treset)"
+    echo ""
+    
+    local current_ip=$(get_server_ip)
+    load_config
+    
+    echo -e "$(tbold)Current Configuration:$(treset)"
+    echo -e "  Server IP:     $(tgreen)$current_ip$(treset)"
+    echo -e "  Config Server: $(tgreen)$DOMAIN$(treset)"
+    echo ""
+    
+    echo -e "$(tbold)Domain Management Options:$(treset)"
+    echo ""
+    echo "  1) Add/Update Domain"
+    echo "  2) Use IP Address (Remove Domain)"
+    echo "  3) Check Domain DNS Status"
+    echo "  4) View Domain Setup Guide"
+    echo "  0) Back to Main Menu"
+    echo ""
+    echo -ne "Select option: "
+    read choice
+    
+    case $choice in
+        1)
+            echo ""
+            echo -e "$(tbold)Add/Update Domain$(treset)"
+            echo ""
+            echo -e "Your server IP: $(tgreen)$current_ip$(treset)"
+            echo ""
+            echo -e "$(tyellow)Before proceeding:$(treset)"
+            echo -e "1. Go to your domain registrar (Namecheap, GoDaddy, Cloudflare, etc.)"
+            echo -e "2. Add an A record pointing to: $(tgreen)$current_ip$(treset)"
+            echo -e "3. Wait 5-15 minutes for DNS propagation"
+            echo ""
+            read -p "Enter your domain (e.g., vpn.yourdomain.com): " domain_name
+            
+            if [[ -z "$domain_name" ]]; then
+                log_error "No domain provided"
+                pause
+                return
+            fi
+            
+            echo ""
+            log_info "Checking if domain resolves to your server..."
+            
+            # Check DNS resolution
+            local resolved_ip=$(dig +short "$domain_name" 2>/dev/null | tail -1)
+            
+            if [[ -z "$resolved_ip" ]]; then
+                resolved_ip=$(nslookup "$domain_name" 2>/dev/null | grep -A1 "Name:" | grep "Address:" | awk '{print $2}' | tail -1)
+            fi
+            
+            if [[ -z "$resolved_ip" ]]; then
+                log_warning "Could not resolve domain. DNS may not be configured yet."
+                echo ""
+                read -p "Continue anyway? (yes/no): " continue_choice
+                
+                if [[ "$continue_choice" != "yes" ]]; then
+                    log_info "Operation cancelled"
+                    pause
+                    return
+                fi
+            elif [[ "$resolved_ip" != "$current_ip" ]]; then
+                log_warning "Domain resolves to $resolved_ip but your server IP is $current_ip"
+                echo ""
+                echo "Please update your DNS A record to point to: $current_ip"
+                echo ""
+                read -p "Continue anyway? (yes/no): " continue_choice
+                
+                if [[ "$continue_choice" != "yes" ]]; then
+                    log_info "Operation cancelled"
+                    pause
+                    return
+                fi
+            else
+                log_success "Domain correctly resolves to your server IP!"
+            fi
+            
+            echo ""
+            log_info "Updating configuration with domain: $domain_name"
+            
+            # Update config
+            sed -i "s/\"server\": \"[^\"]*\"/\"server\": \"$domain_name\"/" "$CONFIG_DIR/config.json"
+            
+            # Regenerate SSL certificates for the domain
+            log_info "Regenerating SSL certificates for domain..."
+            
+            cd "$CONFIG_DIR"
+            
+            # Backup old certificates
+            mv hysteria.server.crt hysteria.server.crt.backup 2>/dev/null || true
+            mv hysteria.server.key hysteria.server.key.backup 2>/dev/null || true
+            
+            # Generate new server key and CSR
+            openssl req -newkey rsa:2048 -nodes -keyout hysteria.server.key \
+                -subj "/C=US/ST=State/L=City/O=Hysteria/CN=$domain_name" \
+                -out hysteria.server.csr >/dev/null 2>&1
+            
+            # Generate new server certificate with both domain and IP
+            openssl x509 -req -extfile <(printf "subjectAltName=DNS:$domain_name,IP:$current_ip") \
+                -days 3650 -in hysteria.server.csr \
+                -CA hysteria.ca.crt -CAkey hysteria.ca.key -CAcreateserial \
+                -out hysteria.server.crt >/dev/null 2>&1
+            
+            # Set permissions
+            chmod 600 hysteria.server.key
+            chmod 644 hysteria.server.crt
+            
+            # Cleanup
+            rm -f hysteria.server.csr hysteria.ca.srl
+            
+            log_success "SSL certificates regenerated"
+            
+            # Restart service
+            log_info "Restarting service..."
+            systemctl restart hysteria-server.service
+            
+            sleep 2
+            
+            if systemctl is-active --quiet hysteria-server.service; then
+                echo ""
+                log_success "Domain configured successfully!"
+                echo ""
+                echo -e "$(tbold)New Connection Details:$(treset)"
+                echo -e "  Server: $(tgreen)$domain_name$(treset)"
+                echo -e "  Port:   $(tgreen)${UDP_PORT#:}$(treset)"
+                echo ""
+                echo -e "You can now use $(tgreen)$domain_name$(treset) in AGN INJECTOR"
+            else
+                log_error "Service failed to restart"
+                echo "Check logs: journalctl -u hysteria-server -n 50"
+            fi
+            
+            pause
+            ;;
+        2)
+            echo ""
+            echo -e "$(tbold)Switch to IP Address$(treset)"
+            echo ""
+            log_info "This will configure the server to use IP instead of domain"
+            echo ""
+            read -p "Continue? (yes/no): " confirm
+            
+            if [[ "$confirm" != "yes" ]]; then
+                log_info "Operation cancelled"
+                pause
+                return
+            fi
+            
+            # Update config with IP
+            sed -i "s/\"server\": \"[^\"]*\"/\"server\": \"$current_ip\"/" "$CONFIG_DIR/config.json"
+            
+            # Regenerate SSL certificates for IP
+            log_info "Regenerating SSL certificates for IP..."
+            
+            cd "$CONFIG_DIR"
+            
+            # Backup old certificates
+            mv hysteria.server.crt hysteria.server.crt.backup 2>/dev/null || true
+            mv hysteria.server.key hysteria.server.key.backup 2>/dev/null || true
+            
+            # Generate new certificates
+            openssl req -newkey rsa:2048 -nodes -keyout hysteria.server.key \
+                -subj "/C=US/ST=State/L=City/O=Hysteria/CN=$current_ip" \
+                -out hysteria.server.csr >/dev/null 2>&1
+            
+            openssl x509 -req -extfile <(printf "subjectAltName=DNS:$current_ip,IP:$current_ip") \
+                -days 3650 -in hysteria.server.csr \
+                -CA hysteria.ca.crt -CAkey hysteria.ca.key -CAcreateserial \
+                -out hysteria.server.crt >/dev/null 2>&1
+            
+            chmod 600 hysteria.server.key
+            chmod 644 hysteria.server.crt
+            rm -f hysteria.server.csr hysteria.ca.srl
+            
+            log_success "SSL certificates regenerated"
+            
+            # Restart service
+            systemctl restart hysteria-server.service
+            
+            log_success "Switched to IP address: $current_ip"
+            pause
+            ;;
+        3)
+            echo ""
+            echo -e "$(tbold)Check Domain DNS Status$(treset)"
+            echo ""
+            read -p "Enter domain to check: " check_domain
+            
+            if [[ -z "$check_domain" ]]; then
+                log_error "No domain provided"
+                pause
+                return
+            fi
+            
+            echo ""
+            log_info "Checking DNS for: $check_domain"
+            echo ""
+            
+            # Try dig first
+            if has_command dig; then
+                echo "=== DIG Results ==="
+                dig +short "$check_domain" A
+                echo ""
+            fi
+            
+            # Try nslookup
+            if has_command nslookup; then
+                echo "=== NSLOOKUP Results ==="
+                nslookup "$check_domain"
+                echo ""
+            fi
+            
+            echo -e "Your server IP should be: $(tgreen)$current_ip$(treset)"
+            echo ""
+            
+            pause
+            ;;
+        4)
+            show_domain_setup_guide
+            pause
+            ;;
+        0)
+            return
+            ;;
+        *)
+            log_error "Invalid option"
+            sleep 1
+            action_domain_management
+            ;;
+    esac
+}
+
+show_domain_setup_guide() {
+    echo ""
+    echo -e "$(tcyan)$(tbold)═══════════════════════════════════════════════════════$(treset)"
+    echo -e "$(tcyan)$(tbold)            Domain Setup Guide for AGN-UDP              $(treset)"
+    echo -e "$(tcyan)$(tbold)═══════════════════════════════════════════════════════$(treset)"
+    echo ""
+    
+    local current_ip=$(get_server_ip)
+    
+    echo -e "$(tbold)Step 1: Choose a Domain$(treset)"
+    echo "  - Buy a domain from: Namecheap, GoDaddy, Cloudflare, etc."
+    echo "  - Or use a subdomain from existing domain"
+    echo "  - Example: vpn.yourdomain.com"
+    echo ""
+    
+    echo -e "$(tbold)Step 2: Configure DNS$(treset)"
+    echo "  - Log into your domain registrar/DNS provider"
+    echo "  - Add an A record:"
+    echo ""
+    echo "    ┌─────────────────────────────────────────┐"
+    echo "    │ Type:  A                                │"
+    echo "    │ Name:  vpn (or @ for root domain)       │"
+    echo "    │ Value: $(tgreen)$current_ip$(treset)                      │"
+    echo "    │ TTL:   300 (5 minutes)                  │"
+    echo "    └─────────────────────────────────────────┘"
+    echo ""
+    
+    echo -e "$(tbold)Step 3: Wait for DNS Propagation$(treset)"
+    echo "  - Usually takes 5-15 minutes"
+    echo "  - Can take up to 24-48 hours in rare cases"
+    echo "  - Check status: https://dnschecker.org"
+    echo ""
+    
+    echo -e "$(tbold)Step 4: Configure in AGN-UDP$(treset)"
+    echo "  - Go to Main Menu > Option 7 > Domain Management"
+    echo "  - Choose 'Add/Update Domain'"
+    echo "  - Enter your domain"
+    echo "  - Script will verify and configure automatically"
+    echo ""
+    
+    echo -e "$(tbold)Popular DNS Providers:$(treset)"
+    echo ""
+    echo -e "  $(tblue)Cloudflare$(treset) (Recommended - Free, Fast)"
+    echo "    1. Add site to Cloudflare"
+    echo "    2. Update nameservers at registrar"
+    echo "    3. Add A record in Cloudflare DNS"
+    echo "    4. Set Proxy status to 'DNS only' (gray cloud)"
+    echo ""
+    echo -e "  $(tblue)Namecheap$(treset)"
+    echo "    1. Go to Domain List > Manage > Advanced DNS"
+    echo "    2. Add A Record"
+    echo ""
+    echo -e "  $(tblue)GoDaddy$(treset)"
+    echo "    1. Go to DNS Management"
+    echo "    2. Add A Record"
+    echo ""
+    
+    echo -e "$(tbold)Testing Your Domain:$(treset)"
+    echo "  - Run: ping your-domain.com"
+    echo "  - Should resolve to: $(tgreen)$current_ip$(treset)"
+    echo "  - Or use: https://dnschecker.org"
+    echo ""
+    
+    echo -e "$(tyellow)Note:$(treset) If using Cloudflare, make sure:"
+    echo "  - Proxy is OFF (gray cloud, not orange)"
+    echo "  - SSL/TLS mode is 'Full' or 'Flexible'"
+    echo ""
+}
+
 action_update() {
     show_banner
     echo -e "$(tyellow)$(tbold)Update Hysteria$(treset)"
@@ -1091,15 +1396,18 @@ main_loop() {
                     action_connection_info
                     ;;
                 7)
-                    action_update
+                    action_domain_management
                     ;;
                 8)
-                    action_update_script
+                    action_update
                     ;;
                 9)
-                    action_fix_missing_server
+                    action_update_script
                     ;;
                 10)
+                    action_fix_missing_server
+                    ;;
+                11)
                     action_uninstall
                     ;;
                 0)
