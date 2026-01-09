@@ -293,10 +293,10 @@ load_config() {
         PROTOCOL=$(grep -oP '(?<="protocol": ")[^"]*' "$CONFIG_DIR/config.json" 2>/dev/null || echo "$PROTOCOL")
         OBFS=$(grep -oP '(?<="obfs": ")[^"]*' "$CONFIG_DIR/config.json" 2>/dev/null || echo "$OBFS")
         
-        # Extract password from config array
-        local password_line=$(grep -A 2 '"config":' "$CONFIG_DIR/config.json" | grep -oP '"\K[^"]+(?=")' | head -1)
-        if [[ -n "$password_line" ]]; then
-            PASSWORD="$password_line"
+        # Extract password from config array - look specifically inside the "auth" section
+        local password_extracted=$(grep -A 3 '"auth"' "$CONFIG_DIR/config.json" | grep -oP '\["[^"]*"\]' | grep -oP '"\K[^"]+' | head -1)
+        if [[ -n "$password_extracted" ]]; then
+            PASSWORD="$password_extracted"
         fi
         
         UP_SPEED=$(grep -oP '(?<="up_mbps": )[0-9]+' "$CONFIG_DIR/config.json" 2>/dev/null || echo "$UP_SPEED")
