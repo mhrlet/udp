@@ -411,43 +411,105 @@ EOF
 install_script() {
     log_info "Installing agnudp command..."
     
-    # Copy this script to /usr/local/bin/agnudp
-    cp "$0" "$SCRIPT_INSTALL_PATH"
-    chmod +x "$SCRIPT_INSTALL_PATH"
+    # Get the actual script path
+    local script_path="$(readlink -f "$0")"
     
-    log_success "Command 'agnudp' installed"
+    # Copy this script to /usr/local/bin/agnudp
+    if [[ -f "$script_path" ]]; then
+        cp "$script_path" "$SCRIPT_INSTALL_PATH"
+        chmod +x "$SCRIPT_INSTALL_PATH"
+        log_success "Command 'agnudp' installed"
+    else
+        log_warning "Could not install agnudp command globally"
+        log_info "You can still run: $script_path"
+    fi
 }
 
 ###############################################################################
 # MENU ACTIONS
 ###############################################################################
 
+get_server_ip() {
+    # Try to get public IP address
+    local ip=""
+    
+    # Try multiple services
+    ip=$(curl -s -4 ifconfig.me 2>/dev/null) || \
+    ip=$(curl -s -4 icanhazip.com 2>/dev/null) || \
+    ip=$(curl -s -4 ipinfo.io/ip 2>/dev/null) || \
+    ip=$(wget -qO- -4 ifconfig.me 2>/dev/null)
+    
+    # If all fail, try to get from ip command
+    if [[ -z "$ip" ]]; then
+        ip=$(ip addr show | grep 'inet ' | grep -v '127.0.0.1' | head -1 | awk '{print $2}' | cut -d/ -f1)
+    fi
+    
+    echo "$ip"
+}
+
+generate_random_password() {
+    # Generate a random 12 character password
+    tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 12
+}
+
 action_install() {
     show_banner
     echo -e "$(tgreen)$(tbold)Installing AGN-UDP Server$(treset)"
     echo ""
     
-    # Get configuration from user
-    echo -e "$(tbold)Server Configuration:$(treset)"
+    # Auto-detect server IP
+    log_info "Detecting server IP address..."
+    local detected_ip=$(get_server_ip)
+    
+    if [[ -n "$detected_ip" ]]; then
+        DOMAIN="$detected_ip"
+        log_success "Detected IP: $detected_ip"
+    else
+        log_warning "Could not detect IP, using default"
+    fi
+    
+    # Generate random password if using default
+    if [[ "$PASSWORD" == "agnudp" ]]; then
+        PASSWORD=$(generate_random_password)
+        log_info "Generated secure password"
+    fi
+    
+    echo ""
+    echo -e "$(tbold)Auto-configured settings:$(treset)"
+    echo -e "  Server IP:     $(tgreen)$DOMAIN$(treset)"
+    echo -e "  Port:          $(tgreen)${UDP_PORT#:}$(treset)"
+    echo -e "  Protocol:      $(tgreen)$PROTOCOL$(treset)"
+    echo -e "  Password:      $(tgreen)$PASSWORD$(treset)"
+    echo -e "  Upload Speed:  $(tgreen)$UP_SPEED Mbps$(treset)"
+    echo -e "  Download Speed:$(tgreen)$DOWN_SPEED Mbps$(treset)"
     echo ""
     
-    read -p "Enter Server IP/Domain [$DOMAIN]: " input
-    DOMAIN=${input:-$DOMAIN}
+    read -p "Press Enter to install with these settings, or type 'custom' to configure manually: " choice
     
-    read -p "Enter UDP Port (format :36712) [$UDP_PORT]: " input
-    UDP_PORT=${input:-$UDP_PORT}
-    
-    read -p "Enter Password [$PASSWORD]: " input
-    PASSWORD=${input:-$PASSWORD}
-    
-    read -p "Enter Upload Speed (Mbps) [$UP_SPEED]: " input
-    UP_SPEED=${input:-$UP_SPEED}
-    
-    read -p "Enter Download Speed (Mbps) [$DOWN_SPEED]: " input
-    DOWN_SPEED=${input:-$DOWN_SPEED}
+    if [[ "$choice" == "custom" ]]; then
+        echo ""
+        echo -e "$(tbold)Custom Configuration:$(treset)"
+        echo ""
+        
+        read -p "Server IP/Domain [$DOMAIN]: " input
+        DOMAIN=${input:-$DOMAIN}
+        
+        read -p "UDP Port (format :36712) [$UDP_PORT]: " input
+        UDP_PORT=${input:-$UDP_PORT}
+        
+        read -p "Password [$PASSWORD]: " input
+        PASSWORD=${input:-$PASSWORD}
+        
+        read -p "Upload Speed (Mbps) [$UP_SPEED]: " input
+        UP_SPEED=${input:-$UP_SPEED}
+        
+        read -p "Download Speed (Mbps) [$DOWN_SPEED]: " input
+        DOWN_SPEED=${input:-$DOWN_SPEED}
+    fi
     
     echo ""
     log_info "Starting installation..."
+    echo ""
     
     detect_architecture
     install_dependencies
