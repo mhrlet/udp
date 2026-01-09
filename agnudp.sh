@@ -601,20 +601,24 @@ action_edit_config() {
     
     load_config
     
+    # Get current server IP
+    local current_ip=$(get_server_ip)
+    
     echo -e "Current configuration:"
-    echo -e "  Domain/IP:    $DOMAIN"
-    echo -e "  Port:         $UDP_PORT"
-    echo -e "  Password:     $PASSWORD"
-    echo -e "  Upload:       $UP_SPEED Mbps"
-    echo -e "  Download:     $DOWN_SPEED Mbps"
+    echo -e "  Server IP:    $(tgreen)$current_ip$(treset)"
+    echo -e "  Port:         $(tgreen)${UDP_PORT#:}$(treset)"
+    echo -e "  Password:     $(tgreen)$PASSWORD$(treset)"
+    echo -e "  Upload:       $(tgreen)$UP_SPEED Mbps$(treset)"
+    echo -e "  Download:     $(tgreen)$DOWN_SPEED Mbps$(treset)"
     echo ""
     
     echo -e "$(tbold)What would you like to edit?$(treset)"
     echo ""
-    echo "  1) Change Password"
-    echo "  2) Change Speeds"
-    echo "  3) Change Port"
-    echo "  4) Edit config file manually"
+    echo "  1) Update Server IP (Regenerate SSL)"
+    echo "  2) Change Password"
+    echo "  3) Change Speeds"
+    echo "  4) Change Port"
+    echo "  5) Edit config file manually"
     echo "  0) Back"
     echo ""
     echo -ne "Select option: "
@@ -623,6 +627,50 @@ action_edit_config() {
     
     case $choice in
         1)
+            echo ""
+            log_info "Current IP: $current_ip"
+            read -p "Enter new server IP [$current_ip]: " new_ip
+            new_ip=${new_ip:-$current_ip}
+            
+            if [[ -n "$new_ip" ]]; then
+                log_info "Regenerating SSL certificates for $new_ip..."
+                
+                cd "$CONFIG_DIR"
+                
+                # Backup old certificates
+                mv hysteria.server.crt hysteria.server.crt.backup 2>/dev/null || true
+                mv hysteria.server.key hysteria.server.key.backup 2>/dev/null || true
+                
+                # Generate new server key and CSR
+                openssl req -newkey rsa:2048 -nodes -keyout hysteria.server.key \
+                    -subj "/C=US/ST=State/L=City/O=Hysteria/CN=$new_ip" \
+                    -out hysteria.server.csr >/dev/null 2>&1
+                
+                # Generate new server certificate
+                openssl x509 -req -extfile <(printf "subjectAltName=DNS:$new_ip,IP:$new_ip") \
+                    -days 3650 -in hysteria.server.csr \
+                    -CA hysteria.ca.crt -CAkey hysteria.ca.key -CAcreateserial \
+                    -out hysteria.server.crt >/dev/null 2>&1
+                
+                # Set permissions
+                chmod 600 hysteria.server.key
+                chmod 644 hysteria.server.crt
+                
+                # Cleanup
+                rm -f hysteria.server.csr hysteria.ca.srl
+                
+                log_success "SSL certificates regenerated for $new_ip"
+                
+                # Restart service
+                systemctl restart hysteria-server.service
+                log_info "Service restarted"
+                
+                echo ""
+                log_success "Server IP updated to: $new_ip"
+            fi
+            pause
+            ;;
+        2)
             read -p "Enter new password: " new_pass
             if [[ -n "$new_pass" ]]; then
                 sed -i "s/\"config\": \[\"[^\"]*\"\]/\"config\": [\"$new_pass\"]/" "$CONFIG_DIR/config.json"
@@ -632,7 +680,7 @@ action_edit_config() {
             fi
             pause
             ;;
-        2)
+        3)
             read -p "Upload speed (Mbps): " up
             read -p "Download speed (Mbps): " down
             if [[ -n "$up" && -n "$down" ]]; then
@@ -646,18 +694,34 @@ action_edit_config() {
             fi
             pause
             ;;
-        3)
+        4)
             read -p "Enter new port (format :36712): " new_port
             if [[ -n "$new_port" ]]; then
+                # Update port in config
                 sed -i "s/\"listen\": \"[^\"]*\"/\"listen\": \"$new_port\"/" "$CONFIG_DIR/config.json"
-                log_success "Port updated"
-                log_warning "You may need to reconfigure firewall rules"
+                
+                # Update firewall rules
+                local iface=$(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1)
+                if [[ -n "$iface" ]]; then
+                    log_info "Updating firewall rules..."
+                    
+                    # Remove old rules
+                    iptables -t nat -D PREROUTING -i "$iface" -p udp --dport $PORT_RANGE_START:$PORT_RANGE_END -j DNAT --to-destination "$UDP_PORT" 2>/dev/null || true
+                    
+                    # Add new rules
+                    iptables -t nat -A PREROUTING -i "$iface" -p udp --dport $PORT_RANGE_START:$PORT_RANGE_END -j DNAT --to-destination "$new_port"
+                    
+                    # Save rules
+                    iptables-save > /etc/iptables/rules.v4
+                fi
+                
+                log_success "Port updated to ${new_port#:}"
                 systemctl restart hysteria-server.service
                 log_info "Service restarted"
             fi
             pause
             ;;
-        4)
+        5)
             if has_command nano; then
                 nano "$CONFIG_DIR/config.json"
             elif has_command vi; then
