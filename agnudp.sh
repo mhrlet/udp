@@ -11,8 +11,8 @@ set -e
 # CONFIGURATION - DEFAULT VALUES
 ###############################################################################
 
-# Server domain or IP address
-DOMAIN="139.84.232.187"
+# Server domain or IP address (will be auto-detected)
+DOMAIN=""
 
 # Protocol
 PROTOCOL="udp"
@@ -158,7 +158,8 @@ show_main_menu() {
         echo -e "  $(tmagenta)5)$(treset) View Logs"
         echo -e "  $(tcyan)6)$(treset) Connection Info"
         echo -e "  $(tyellow)7)$(treset) Update Hysteria"
-        echo -e "  $(tred)8)$(treset) Uninstall"
+        echo -e "  $(tmagenta)8)$(treset) Update Script"
+        echo -e "  $(tred)9)$(treset) Uninstall"
     fi
     
     echo -e "  $(tred)0)$(treset) Exit"
@@ -257,15 +258,51 @@ install_dependencies() {
     fi
 }
 
+get_server_ip() {
+    # Try to get public IP address
+    local ip=""
+    
+    # Try multiple services
+    ip=$(curl -s -4 ifconfig.me 2>/dev/null) || \
+    ip=$(curl -s -4 icanhazip.com 2>/dev/null) || \
+    ip=$(curl -s -4 ipinfo.io/ip 2>/dev/null) || \
+    ip=$(wget -qO- -4 ifconfig.me 2>/dev/null)
+    
+    # If all fail, try to get from ip command
+    if [[ -z "$ip" ]]; then
+        ip=$(ip addr show | grep 'inet ' | grep -v '127.0.0.1' | head -1 | awk '{print $2}' | cut -d/ -f1)
+    fi
+    
+    echo "$ip"
+}
+
 load_config() {
     if [[ -f "$CONFIG_DIR/config.json" ]]; then
-        DOMAIN=$(grep -oP '(?<="server": ")[^"]*' "$CONFIG_DIR/config.json" 2>/dev/null || echo "$DOMAIN")
+        # Load server from config (could be IP or domain)
+        local config_server=$(grep -oP '(?<="server": ")[^"]*' "$CONFIG_DIR/config.json" 2>/dev/null)
+        
+        # If config has a server value, use it; otherwise detect current IP
+        if [[ -n "$config_server" ]]; then
+            DOMAIN="$config_server"
+        else
+            DOMAIN=$(get_server_ip)
+        fi
+        
         UDP_PORT=$(grep -oP '(?<="listen": ")[^"]*' "$CONFIG_DIR/config.json" 2>/dev/null || echo "$UDP_PORT")
         PROTOCOL=$(grep -oP '(?<="protocol": ")[^"]*' "$CONFIG_DIR/config.json" 2>/dev/null || echo "$PROTOCOL")
         OBFS=$(grep -oP '(?<="obfs": ")[^"]*' "$CONFIG_DIR/config.json" 2>/dev/null || echo "$OBFS")
-        PASSWORD=$(grep -oP '(?<="config": \[")[^"]*' "$CONFIG_DIR/config.json" 2>/dev/null || echo "$PASSWORD")
+        
+        # Extract password from config array
+        local password_line=$(grep -A 2 '"config":' "$CONFIG_DIR/config.json" | grep -oP '"\K[^"]+(?=")' | head -1)
+        if [[ -n "$password_line" ]]; then
+            PASSWORD="$password_line"
+        fi
+        
         UP_SPEED=$(grep -oP '(?<="up_mbps": )[0-9]+' "$CONFIG_DIR/config.json" 2>/dev/null || echo "$UP_SPEED")
         DOWN_SPEED=$(grep -oP '(?<="down_mbps": )[0-9]+' "$CONFIG_DIR/config.json" 2>/dev/null || echo "$DOWN_SPEED")
+    else
+        # No config file, detect current IP
+        DOMAIN=$(get_server_ip)
     fi
 }
 
@@ -324,6 +361,7 @@ create_config_file() {
     
     cat > "$CONFIG_DIR/config.json" << EOF
 {
+  "server": "$DOMAIN",
   "listen": "$UDP_PORT",
   "protocol": "$PROTOCOL",
   "cert": "$CONFIG_DIR/hysteria.server.crt",
@@ -429,24 +467,6 @@ install_script() {
 # MENU ACTIONS
 ###############################################################################
 
-get_server_ip() {
-    # Try to get public IP address
-    local ip=""
-    
-    # Try multiple services
-    ip=$(curl -s -4 ifconfig.me 2>/dev/null) || \
-    ip=$(curl -s -4 icanhazip.com 2>/dev/null) || \
-    ip=$(curl -s -4 ipinfo.io/ip 2>/dev/null) || \
-    ip=$(wget -qO- -4 ifconfig.me 2>/dev/null)
-    
-    # If all fail, try to get from ip command
-    if [[ -z "$ip" ]]; then
-        ip=$(ip addr show | grep 'inet ' | grep -v '127.0.0.1' | head -1 | awk '{print $2}' | cut -d/ -f1)
-    fi
-    
-    echo "$ip"
-}
-
 generate_random_password() {
     # Generate a random 12 character password
     tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 12
@@ -460,8 +480,12 @@ action_reinstall() {
     # Load existing config
     load_config
     
+    # Get current server IP for display
+    local current_ip=$(get_server_ip)
+    
     echo -e "$(tbold)Current Configuration:$(treset)"
-    echo -e "  Server IP:     $(tgreen)$DOMAIN$(treset)"
+    echo -e "  Server:        $(tgreen)$DOMAIN$(treset)"
+    echo -e "  Current IP:    $(tgreen)$current_ip$(treset)"
     echo -e "  Port:          $(tgreen)${UDP_PORT#:}$(treset)"
     echo -e "  Password:      $(tgreen)$PASSWORD$(treset)"
     echo -e "  Upload Speed:  $(tgreen)$UP_SPEED Mbps$(treset)"
@@ -521,6 +545,7 @@ action_install() {
         log_success "Detected IP: $detected_ip"
     else
         log_warning "Could not detect IP, using default"
+        DOMAIN="127.0.0.1"
     fi
     
     # Generate random password if using default
@@ -601,11 +626,12 @@ action_edit_config() {
     
     load_config
     
-    # Get current server IP
+    # Get current server IP (actual network IP)
     local current_ip=$(get_server_ip)
     
     echo -e "Current configuration:"
-    echo -e "  Server IP:    $(tgreen)$current_ip$(treset)"
+    echo -e "  Server:       $(tgreen)$DOMAIN$(treset)"
+    echo -e "  Current IP:   $(tgreen)$current_ip$(treset)"
     echo -e "  Port:         $(tgreen)${UDP_PORT#:}$(treset)"
     echo -e "  Password:     $(tgreen)$PASSWORD$(treset)"
     echo -e "  Upload:       $(tgreen)$UP_SPEED Mbps$(treset)"
@@ -614,7 +640,7 @@ action_edit_config() {
     
     echo -e "$(tbold)What would you like to edit?$(treset)"
     echo ""
-    echo "  1) Update Server IP (Regenerate SSL)"
+    echo "  1) Update Server IP/Domain (Regenerate SSL)"
     echo "  2) Change Password"
     echo "  3) Change Speeds"
     echo "  4) Change Port"
@@ -628,12 +654,15 @@ action_edit_config() {
     case $choice in
         1)
             echo ""
-            log_info "Current IP: $current_ip"
-            read -p "Enter new server IP [$current_ip]: " new_ip
-            new_ip=${new_ip:-$current_ip}
+            log_info "Current Server: $DOMAIN"
+            log_info "Detected IP: $current_ip"
+            echo ""
+            echo "You can enter an IP address or domain name"
+            read -p "Enter new server IP/Domain [$current_ip]: " new_server
+            new_server=${new_server:-$current_ip}
             
-            if [[ -n "$new_ip" ]]; then
-                log_info "Regenerating SSL certificates for $new_ip..."
+            if [[ -n "$new_server" ]]; then
+                log_info "Regenerating SSL certificates for $new_server..."
                 
                 cd "$CONFIG_DIR"
                 
@@ -643,11 +672,11 @@ action_edit_config() {
                 
                 # Generate new server key and CSR
                 openssl req -newkey rsa:2048 -nodes -keyout hysteria.server.key \
-                    -subj "/C=US/ST=State/L=City/O=Hysteria/CN=$new_ip" \
+                    -subj "/C=US/ST=State/L=City/O=Hysteria/CN=$new_server" \
                     -out hysteria.server.csr >/dev/null 2>&1
                 
                 # Generate new server certificate
-                openssl x509 -req -extfile <(printf "subjectAltName=DNS:$new_ip,IP:$new_ip") \
+                openssl x509 -req -extfile <(printf "subjectAltName=DNS:$new_server,IP:$new_server") \
                     -days 3650 -in hysteria.server.csr \
                     -CA hysteria.ca.crt -CAkey hysteria.ca.key -CAcreateserial \
                     -out hysteria.server.crt >/dev/null 2>&1
@@ -659,14 +688,18 @@ action_edit_config() {
                 # Cleanup
                 rm -f hysteria.server.csr hysteria.ca.srl
                 
-                log_success "SSL certificates regenerated for $new_ip"
+                # Update config.json with new server
+                sed -i "s/\"server\": \"[^\"]*\"/\"server\": \"$new_server\"/" "$CONFIG_DIR/config.json"
+                
+                log_success "SSL certificates regenerated for $new_server"
+                log_success "Configuration updated"
                 
                 # Restart service
                 systemctl restart hysteria-server.service
                 log_info "Service restarted"
                 
                 echo ""
-                log_success "Server IP updated to: $new_ip"
+                log_success "Server updated to: $new_server"
             fi
             pause
             ;;
@@ -813,9 +846,13 @@ action_view_logs() {
 show_connection_info() {
     load_config
     
+    # Get current IP
+    local current_ip=$(get_server_ip)
+    
     echo -e "$(tcyan)$(tbold)Connection Information:$(treset)"
     echo ""
     echo -e "  Server:       $(tgreen)$DOMAIN$(treset)"
+    echo -e "  Current IP:   $(tgreen)$current_ip$(treset)"
     echo -e "  Port:         $(tgreen)${UDP_PORT#:}$(treset)"
     echo -e "  Protocol:     $(tgreen)$PROTOCOL$(treset)"
     echo -e "  Password:     $(tgreen)$PASSWORD$(treset)"
@@ -846,6 +883,49 @@ action_update() {
         log_success "Hysteria updated successfully"
     else
         log_error "Update failed"
+    fi
+    
+    pause
+}
+
+action_update_script() {
+    show_banner
+    echo -e "$(tmagenta)$(tbold)Update AGN-UDP Script$(treset)"
+    echo ""
+    
+    local script_url="https://raw.githubusercontent.com/mhrlet/udp/main/agnudp.sh"
+    local temp_script="/tmp/agnudp_new.sh"
+    
+    log_info "Checking for script updates..."
+    echo ""
+    
+    # Download the new version
+    if curl -L -f -# -o "$temp_script" "$script_url"; then
+        chmod +x "$temp_script"
+        
+        # Backup current script
+        if [[ -f "$SCRIPT_INSTALL_PATH" ]]; then
+            cp "$SCRIPT_INSTALL_PATH" "$SCRIPT_INSTALL_PATH.backup"
+            log_info "Current script backed up to: $SCRIPT_INSTALL_PATH.backup"
+        fi
+        
+        # Install new version
+        mv "$temp_script" "$SCRIPT_INSTALL_PATH"
+        chmod +x "$SCRIPT_INSTALL_PATH"
+        
+        echo ""
+        log_success "Script updated successfully!"
+        echo ""
+        echo -e "$(tyellow)The script will now restart with the new version.$(treset)"
+        echo ""
+        
+        sleep 2
+        
+        # Restart the script
+        exec "$SCRIPT_INSTALL_PATH"
+    else
+        log_error "Failed to download script update"
+        rm -f "$temp_script"
     fi
     
     pause
@@ -936,6 +1016,9 @@ main_loop() {
                     action_update
                     ;;
                 8)
+                    action_update_script
+                    ;;
+                9)
                     action_uninstall
                     ;;
                 0)
