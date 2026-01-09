@@ -100,6 +100,16 @@ show_banner() {
     cat << "EOF"
 ╔══════════════════════════════════════════════════════════╗
 ║                                                          ║
+║           The IT Guy Your Mama Told You About            ║
+║                                                          ║
+╚══════════════════════════════════════════════════════════╝
+EOF
+    echo -e "$(treset)"
+    echo ""
+    echo -e "$(tgreen)$(tbold)"
+    cat << "EOF"
+╔══════════════════════════════════════════════════════════╗
+║                                                          ║
 ║                    AGN-UDP MANAGER                       ║
 ║                 Hysteria UDP Server                      ║
 ║                                                          ║
@@ -862,7 +872,7 @@ show_connection_info() {
     echo ""
     echo -e "$(tbold)Client App:$(treset)"
     echo -e "  AGN INJECTOR"
-    echo -e "  https://play.google.com/store/apps/details?id=com.agn.injector"
+    echo -e "  $(tblue)https://www.smktultratun.online/$(treset)"
     echo ""
 }
 
