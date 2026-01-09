@@ -1,0 +1,17 @@
+# AGN-UDP Hysteria Server
+
+## Quick Install
+```bash
+wget https://raw.githubusercontent.com/mhrlet/udp/main/agnudp.sh
+chmod +x agnudp.sh
+sudo ./agnudp.sh
+```
+
+## Usage
+
+After installation, just type:
+```bash
+agnudp
+```
+
+Enjoy the interactive menu! 🚀
